@@ -28,6 +28,7 @@ import java.beans.IntrospectionException;
 import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
 import java.lang.reflect.InvocationTargetException;
@@ -37,7 +38,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.zeromq.ZMQException.IOException;
 
 public class TuioSink implements TuioListener {
 
@@ -93,15 +93,11 @@ public class TuioSink implements TuioListener {
                             }
                         } catch (IOException ex) {
                             // ignore close exception
-                        } catch (java.io.IOException ex) {
-                            logger.error(null, ex);
                         }
                         try {
                             bos.close();
                         } catch (IOException ex) {
                             // ignore close exception
-                        } catch (java.io.IOException ex) {
-                            logger.error(null, ex);
                         }
                     }
                     break;

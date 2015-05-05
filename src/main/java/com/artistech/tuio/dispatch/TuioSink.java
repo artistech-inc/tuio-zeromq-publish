@@ -16,7 +16,6 @@
 package com.artistech.tuio.dispatch;
 
 import TUIO.TuioBlob;
-import TUIO.TuioClient;
 import TUIO.TuioCursor;
 import TUIO.TuioListener;
 import TUIO.TuioObject;
@@ -24,6 +23,8 @@ import TUIO.TuioTime;
 import com.artistech.utils.Mailbox;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.GeneratedMessage.Builder;
+import java.beans.BeanInfo;
 import java.beans.IntrospectionException;
 import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
@@ -32,10 +33,12 @@ import java.io.IOException;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.text.MessageFormat;
 import java.util.HashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.apache.commons.lang3.ClassUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -49,7 +52,8 @@ public class TuioSink implements TuioListener {
     public enum SerializeType {
 
         OBJECT,
-        JSON
+        JSON,
+        PROTOBUF
     }
 
     private void broadcast(String action, Object obj) {
@@ -60,9 +64,7 @@ public class TuioSink implements TuioListener {
             for (PropertyDescriptor pd : props) {
                 if (pd.getReadMethod() != null) {
                     try {
-//                        if (!pd.getDisplayName().equals("path")) {
                         ret.put(pd.getDisplayName(), pd.getReadMethod().invoke(obj));
-//                        }
                     } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
                         Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
                     }
@@ -73,6 +75,18 @@ public class TuioSink implements TuioListener {
         }
         try {
             switch (serialization) {
+                case PROTOBUF: {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    try {
+                        convertToProtobuf(obj).build().writeTo(baos);
+                        baos.flush();
+                        mailbox.addMessage(baos.toByteArray());
+                        baos.close();
+                    } catch (IOException ex) {
+                        Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                }
+                break;
                 case JSON:
                     mailbox.addMessage(mapper.writeValueAsString(ret).getBytes());
                     break;
@@ -92,12 +106,10 @@ public class TuioSink implements TuioListener {
                                 out.close();
                             }
                         } catch (IOException ex) {
-                            // ignore close exception
                         }
                         try {
                             bos.close();
                         } catch (IOException ex) {
-                            // ignore close exception
                         }
                     }
                     break;
@@ -222,7 +234,7 @@ public class TuioSink implements TuioListener {
         logger.debug(MessageFormat.format("Remove Blob: {0}", tblb.getBlobID()));
         broadcast("remove", tblb);
     }
-    
+
     public SerializeType getSerializationType() {
         return serialization;
     }
@@ -231,28 +243,60 @@ public class TuioSink implements TuioListener {
         serialization = value;
     }
 
-    /**
-     * Main: can take a port value as an argument.
-     *
-     * @param argv
-     */
-    public static void main(String argv[]) {
+    public static Builder convertToProtobuf(Object obj) {
+        Builder builder;
 
-        int port = 3333;
-
-        if (argv.length == 1) {
-            try {
-                port = Integer.parseInt(argv[1]);
-            } catch (NumberFormatException e) {
-                System.out.println(MessageFormat.format("Port value '{0}' not recognized.", argv[1]));
-            }
+        if (obj.getClass().getName().equals("TUIO.TuioTime")) {
+            builder = TUIO.TuioProtos.Time.newBuilder();
+        } else if (obj.getClass().getName().equals("TUIO.TuioCursor")) {
+            builder = TUIO.TuioProtos.Cursor.newBuilder();
+        } else if (obj.getClass().getName().equals("TUIO.TuioObject")) {
+            builder = TUIO.TuioProtos.Object.newBuilder();
+        } else if (obj.getClass().getName().equals("TUIO.TuioBlob")) {
+            builder = TUIO.TuioProtos.Blob.newBuilder();
+        } else {
+            return null;
         }
 
-        TuioSink sink = new TuioSink();
-        TuioClient client = new TuioClient(port);
+        try {
+            PropertyDescriptor[] objProps = Introspector.getBeanInfo(obj.getClass()).getPropertyDescriptors();
+            BeanInfo beanInfo = Introspector.getBeanInfo(builder.getClass());
+            PropertyDescriptor[] builderProps = beanInfo.getPropertyDescriptors();
+            Method[] methods = builder.getClass().getMethods();
+            for (PropertyDescriptor prop1 : objProps) {
+                for (PropertyDescriptor prop2 : builderProps) {
+                    if (prop1.getName().equals(prop2.getName())) {
+                        Method readMethod = prop1.getReadMethod();
+                        Method method = null;
+                        for (Method m : methods) {
+                            if (m.getName().equals(readMethod.getName().replaceFirst("get", "set"))) {
+                                method = m;
+                                break;
+                            }
+                        }
+                        try {
+                            if (method != null && prop1.getReadMethod() != null) {
+                                boolean primitiveOrWrapper = ClassUtils.isPrimitiveOrWrapper(prop1.getReadMethod().getReturnType());
 
-        logger.info(MessageFormat.format("Listening to TUIO message at port: {0}", Integer.toString(port)));
-        client.addTuioListener(sink);
-        client.connect();
+                                if (primitiveOrWrapper) {
+                                    method.invoke(builder, prop1.getReadMethod().invoke(obj));
+                                } else {
+                                    Object invoke = prop1.getReadMethod().invoke(obj);
+                                    com.google.protobuf.GeneratedMessage.Builder val = convertToProtobuf(invoke);
+                                    method.invoke(builder, val);
+                                }
+                            }
+                        } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException | SecurityException ex) {
+//                            logger.error(ex);
+                        }
+                        break;
+                    }
+                }
+            }
+        } catch (IntrospectionException ex) {
+            logger.fatal(ex);
+        }
+
+        return builder;
     }
 }

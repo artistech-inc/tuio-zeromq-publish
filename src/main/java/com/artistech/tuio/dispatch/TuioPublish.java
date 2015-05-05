@@ -45,7 +45,7 @@ public class TuioPublish {
 
         //create a new TUIO sink connected at the specified port
         TuioSink sink = new TuioSink();
-        sink.setSerializationType(TuioSink.SerializeType.OBJECT);
+        sink.setSerializationType(TuioSink.SerializeType.PROTOBUF);
         TuioClient client = new TuioClient(port);
 
         logger.info(MessageFormat.format("Listening to TUIO message at port: {0}", Integer.toString(port)));

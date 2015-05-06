@@ -20,11 +20,10 @@ import TUIO.TuioCursor;
 import TUIO.TuioListener;
 import TUIO.TuioObject;
 import TUIO.TuioTime;
+import com.artistech.protobuf.ProtoConverter;
 import com.artistech.utils.Mailbox;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.GeneratedMessage.Builder;
-import java.beans.BeanInfo;
 import java.beans.IntrospectionException;
 import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
@@ -33,12 +32,11 @@ import java.io.IOException;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.text.MessageFormat;
 import java.util.HashMap;
+import java.util.ServiceLoader;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import org.apache.commons.lang3.ClassUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -48,12 +46,20 @@ public class TuioSink implements TuioListener {
     private static final Log logger = LogFactory.getLog(TuioSink.class);
     protected final Mailbox<byte[]> mailbox = new Mailbox<>();
     private SerializeType serialization = SerializeType.JSON;
+    private final ServiceLoader<ProtoConverter> services;
 
     public enum SerializeType {
 
         OBJECT,
         JSON,
         PROTOBUF
+    }
+
+    /**
+     * Constructor
+     */
+    public TuioSink() {
+        services = ServiceLoader.load(ProtoConverter.class);
     }
 
     private void broadcast(String action, Object obj) {
@@ -78,9 +84,19 @@ public class TuioSink implements TuioListener {
                 case PROTOBUF: {
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
                     try {
-                        convertToProtobuf(obj).build().writeTo(baos);
-                        baos.flush();
-                        mailbox.addMessage(baos.toByteArray());
+                        boolean success = false;
+                        for (ProtoConverter service : services) {
+                            if (service.supportsConversion(obj)) {
+                                service.convertToProtobuf(obj).build().writeTo(baos);
+                                success = true;
+                                break;
+                            }
+                        }
+                        if (success) {
+//                        convertToProtobuf(obj).build().writeTo(baos);
+                            baos.flush();
+                            mailbox.addMessage(baos.toByteArray());
+                        }
                         baos.close();
                     } catch (IOException ex) {
                         Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
@@ -197,12 +213,6 @@ public class TuioSink implements TuioListener {
     }
 
     /**
-     * Constructor.
-     */
-    public TuioSink() {
-    }
-
-    /**
      * Add Blob Event.
      *
      * @param tblb
@@ -241,62 +251,5 @@ public class TuioSink implements TuioListener {
 
     public void setSerializationType(SerializeType value) {
         serialization = value;
-    }
-
-    public static Builder convertToProtobuf(Object obj) {
-        Builder builder;
-
-        if (obj.getClass().getName().equals("TUIO.TuioTime")) {
-            builder = TUIO.TuioProtos.Time.newBuilder();
-        } else if (obj.getClass().getName().equals("TUIO.TuioCursor")) {
-            builder = TUIO.TuioProtos.Cursor.newBuilder();
-        } else if (obj.getClass().getName().equals("TUIO.TuioObject")) {
-            builder = TUIO.TuioProtos.Object.newBuilder();
-        } else if (obj.getClass().getName().equals("TUIO.TuioBlob")) {
-            builder = TUIO.TuioProtos.Blob.newBuilder();
-        } else {
-            return null;
-        }
-
-        try {
-            PropertyDescriptor[] objProps = Introspector.getBeanInfo(obj.getClass()).getPropertyDescriptors();
-            BeanInfo beanInfo = Introspector.getBeanInfo(builder.getClass());
-            PropertyDescriptor[] builderProps = beanInfo.getPropertyDescriptors();
-            Method[] methods = builder.getClass().getMethods();
-            for (PropertyDescriptor prop1 : objProps) {
-                for (PropertyDescriptor prop2 : builderProps) {
-                    if (prop1.getName().equals(prop2.getName())) {
-                        Method readMethod = prop1.getReadMethod();
-                        Method method = null;
-                        for (Method m : methods) {
-                            if (m.getName().equals(readMethod.getName().replaceFirst("get", "set"))) {
-                                method = m;
-                                break;
-                            }
-                        }
-                        try {
-                            if (method != null && prop1.getReadMethod() != null) {
-                                boolean primitiveOrWrapper = ClassUtils.isPrimitiveOrWrapper(prop1.getReadMethod().getReturnType());
-
-                                if (primitiveOrWrapper) {
-                                    method.invoke(builder, prop1.getReadMethod().invoke(obj));
-                                } else {
-                                    Object invoke = prop1.getReadMethod().invoke(obj);
-                                    com.google.protobuf.GeneratedMessage.Builder val = convertToProtobuf(invoke);
-                                    method.invoke(builder, val);
-                                }
-                            }
-                        } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException | SecurityException ex) {
-//                            logger.error(ex);
-                        }
-                        break;
-                    }
-                }
-            }
-        } catch (IntrospectionException ex) {
-            logger.fatal(ex);
-        }
-
-        return builder;
     }
 }

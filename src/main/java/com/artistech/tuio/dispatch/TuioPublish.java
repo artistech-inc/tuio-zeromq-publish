@@ -17,50 +17,73 @@ package com.artistech.tuio.dispatch;
 
 import TUIO.TuioClient;
 import java.text.MessageFormat;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
 import org.zeromq.ZMQ;
 
 public class TuioPublish {
-    
-    private final static Log logger = LogFactory.getLog(TuioPublish.class);
 
-    public static void main(String[] argv) throws InterruptedException {
+    public static void main(String[] args) throws InterruptedException {
         //read off the TUIO port from the command line
-        int port = 3333;
-        if (argv.length == 1) {
-            try {
-                port = Integer.parseInt(argv[1]);
-            } catch (NumberFormatException e) {
-                System.out.println(MessageFormat.format("Port value '{0}' not recognized.", argv[1]));
+        int tuio_port = 3333;
+        int zeromq_port = 5565;
+
+        Options options = new Options();
+        options.addOption("t", "tuio-port", true, "TUIO Port to listen on. (Default = 3333)");
+        options.addOption("z", "zeromq-port", true, "ZeroMQ Port to publish on. (Default = 5565)");
+        options.addOption("h", "help", false, "Show this message.");
+        HelpFormatter formatter = new HelpFormatter();
+
+        try {
+            CommandLineParser parser = new org.apache.commons.cli.BasicParser();
+            CommandLine cmd = parser.parse(options, args);
+
+            if (cmd.hasOption("help")) {
+                formatter.printHelp("tuio-zeromq-publish", options);
+                return;
+            } else {
+                if (cmd.hasOption("t") || cmd.hasOption("tuio-port")) {
+                    tuio_port = Integer.parseInt(cmd.getOptionValue("t"));
+                }
+                if (cmd.hasOption("z") || cmd.hasOption("zeromq-port")) {
+                    zeromq_port = Integer.parseInt(cmd.getOptionValue("z"));
+                }
             }
+        } catch (ParseException | NumberFormatException ex) {
+            System.err.println("Error Processing Command Options:");
+            formatter.printHelp("tuio-zeromq-publish", options);
+            return;
         }
 
         //start up the zmq publisher
         ZMQ.Context context = ZMQ.context(1);
-        ZMQ.Socket publisher = context.socket(ZMQ.PUB);
-
         // We send updates via this socket
-        publisher.bind("tcp://*:5565");
+        try (ZMQ.Socket publisher = context.socket(ZMQ.PUB)) {
+            // We send updates via this socket
+            publisher.bind("tcp://*:" + Integer.toString(zeromq_port));
 
-        //create a new TUIO sink connected at the specified port
-        TuioSink sink = new TuioSink();
-        sink.setSerializationType(TuioSink.SerializeType.PROTOBUF);
-        TuioClient client = new TuioClient(port);
+            //create a new TUIO sink connected at the specified port
+            TuioSink sink = new TuioSink();
+            sink.setSerializationType(TuioSink.SerializeType.PROTOBUF);
+            TuioClient client = new TuioClient(tuio_port);
 
-        logger.info(MessageFormat.format("Listening to TUIO message at port: {0}", Integer.toString(port)));
-        client.addTuioListener(sink);
-        client.connect();
+            System.out.println(MessageFormat.format("Listening to TUIO message at port: {0}", Integer.toString(tuio_port)));
+            System.out.println(MessageFormat.format("Publishing to ZeroMQ at port: {0}", Integer.toString(zeromq_port)));
+            client.addTuioListener(sink);
+            client.connect();
 
-        //while not halted (infinite loop...)
-        //read any available messages and publish
-        while(!sink.mailbox.isHalted()) {
-            byte[] msg = sink.mailbox.getMessage();
-            publisher.send(msg, 0);
+            //while not halted (infinite loop...)
+            //read any available messages and publish
+            while (!sink.mailbox.isHalted()) {
+                byte[] msg = sink.mailbox.getMessage();
+                publisher.send(msg, 0);
+            }
+
+            //cleanup
         }
-
-        //cleanup
-        publisher.close();
         context.term();
     }
 }

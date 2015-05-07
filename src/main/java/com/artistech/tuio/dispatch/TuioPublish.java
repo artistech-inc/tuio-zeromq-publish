@@ -30,10 +30,12 @@ public class TuioPublish {
         //read off the TUIO port from the command line
         int tuio_port = 3333;
         int zeromq_port = 5565;
+        TuioSink.SerializeType serialize_method = TuioSink.SerializeType.PROTOBUF;
 
         Options options = new Options();
         options.addOption("t", "tuio-port", true, "TUIO Port to listen on. (Default = 3333)");
         options.addOption("z", "zeromq-port", true, "ZeroMQ Port to publish on. (Default = 5565)");
+        options.addOption("s", "serialize-method", true, "Serialization Method (JSON, OBJECT, Default = PROTOBUF).");
         options.addOption("h", "help", false, "Show this message.");
         HelpFormatter formatter = new HelpFormatter();
 
@@ -51,8 +53,11 @@ public class TuioPublish {
                 if (cmd.hasOption("z") || cmd.hasOption("zeromq-port")) {
                     zeromq_port = Integer.parseInt(cmd.getOptionValue("z"));
                 }
+                if (cmd.hasOption("s") || cmd.hasOption("serialize-method")) {
+                    serialize_method = (TuioSink.SerializeType) Enum.valueOf(TuioSink.SerializeType.class, cmd.getOptionValue("s"));
+                }
             }
-        } catch (ParseException | NumberFormatException ex) {
+        } catch (ParseException | IllegalArgumentException ex) {
             System.err.println("Error Processing Command Options:");
             formatter.printHelp("tuio-zeromq-publish", options);
             return;
@@ -67,11 +72,12 @@ public class TuioPublish {
 
             //create a new TUIO sink connected at the specified port
             TuioSink sink = new TuioSink();
-            sink.setSerializationType(TuioSink.SerializeType.PROTOBUF);
+            sink.setSerializationType(serialize_method);
             TuioClient client = new TuioClient(tuio_port);
 
             System.out.println(MessageFormat.format("Listening to TUIO message at port: {0}", Integer.toString(tuio_port)));
             System.out.println(MessageFormat.format("Publishing to ZeroMQ at port: {0}", Integer.toString(zeromq_port)));
+            System.out.println(MessageFormat.format("Serializing as: {0}", serialize_method));
             client.addTuioListener(sink);
             client.connect();
 

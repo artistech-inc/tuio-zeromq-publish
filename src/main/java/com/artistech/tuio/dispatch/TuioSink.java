@@ -24,19 +24,15 @@ import com.artistech.protobuf.ProtoConverter;
 import com.artistech.utils.Mailbox;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.beans.IntrospectionException;
-import java.beans.Introspector;
-import java.beans.PropertyDescriptor;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
-import java.lang.reflect.InvocationTargetException;
 import java.text.MessageFormat;
-import java.util.HashMap;
 import java.util.ServiceLoader;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -44,7 +40,7 @@ public class TuioSink implements TuioListener {
 
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final Log logger = LogFactory.getLog(TuioSink.class);
-    protected final Mailbox<byte[]> mailbox = new Mailbox<>();
+    protected final Mailbox<ImmutablePair<String, byte[]>> mailbox = new Mailbox<>();
     private SerializeType serialization = SerializeType.JSON;
     private final ServiceLoader<ProtoConverter> services;
 
@@ -62,76 +58,44 @@ public class TuioSink implements TuioListener {
         services = ServiceLoader.load(ProtoConverter.class);
     }
 
-    private void broadcast(String action, Object obj) {
-        HashMap<String, Object> ret = new HashMap<>();
-        try {
-            PropertyDescriptor[] props = Introspector.getBeanInfo(obj.getClass()).getPropertyDescriptors();
-            ret.put("action", action);
-            for (PropertyDescriptor pd : props) {
-                if (pd.getReadMethod() != null) {
-                    try {
-                        ret.put(pd.getDisplayName(), pd.getReadMethod().invoke(obj));
-                    } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
-                        Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
+    private void broadcast(Object obj) {
+        String type = obj.getClass().getSimpleName();
+        switch (serialization) {
+            case PROTOBUF: {
+                try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                    boolean success = false;
+                    for (ProtoConverter service : services) {
+                        if (service.supportsConversion(obj)) {
+                            service.convertToProtobuf(obj).build().writeTo(baos);
+                            baos.flush();
+                            success = true;
+                            break;
+                        }
                     }
+                    if (success) {
+                        mailbox.addMessage(new ImmutablePair<>(type, baos.toByteArray()));
+                    }
+                } catch (IOException ex) {
+                    Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
                 }
             }
-        } catch (IntrospectionException ex) {
-            Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
-        }
-        try {
-            switch (serialization) {
-                case PROTOBUF: {
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    try {
-                        boolean success = false;
-                        for (ProtoConverter service : services) {
-                            if (service.supportsConversion(obj)) {
-                                service.convertToProtobuf(obj).build().writeTo(baos);
-                                success = true;
-                                break;
-                            }
-                        }
-                        if (success) {
-//                        convertToProtobuf(obj).build().writeTo(baos);
-                            baos.flush();
-                            mailbox.addMessage(baos.toByteArray());
-                        }
-                        baos.close();
-                    } catch (IOException ex) {
-                        Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
-                    }
+            break;
+            case JSON:
+                try {
+                    mailbox.addMessage(new ImmutablePair<>(type, mapper.writeValueAsString(obj).getBytes()));
+                } catch (JsonProcessingException ex) {
+                    Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
                 }
                 break;
-                case JSON:
-                    mailbox.addMessage(mapper.writeValueAsString(ret).getBytes());
-                    break;
-                case OBJECT:
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    ObjectOutput out = null;
-                    try {
-                        out = new ObjectOutputStream(bos);
-                        out.writeObject(obj);
-                        byte[] yourBytes = bos.toByteArray();
-                        mailbox.addMessage(yourBytes);
-                    } catch (java.io.IOException ex) {
-                        logger.error(null, ex);
-                    } finally {
-                        try {
-                            if (out != null) {
-                                out.close();
-                            }
-                        } catch (IOException ex) {
-                        }
-                        try {
-                            bos.close();
-                        } catch (IOException ex) {
-                        }
-                    }
-                    break;
-            }
-        } catch (JsonProcessingException ex) {
-            Logger.getLogger(TuioSink.class.getName()).log(Level.SEVERE, null, ex);
+            case OBJECT:
+                try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                        ObjectOutput out = new ObjectOutputStream(bos)) {
+                    out.writeObject(obj);
+                    mailbox.addMessage(new ImmutablePair<>(type, bos.toByteArray()));
+                } catch (java.io.IOException ex) {
+                    logger.error(null, ex);
+                }
+                break;
         }
     }
 
@@ -143,7 +107,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void addTuioObject(TuioObject tobj) {
         logger.debug(MessageFormat.format("add tuio object symbol id: {0}", tobj.getSymbolID()));
-        broadcast("add", tobj);
+        broadcast(tobj);
     }
 
     /**
@@ -154,7 +118,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void updateTuioObject(TuioObject tobj) {
         logger.debug(MessageFormat.format("update tuio object symbol id: {0}", tobj.getSymbolID()));
-        broadcast("update", tobj);
+        broadcast(tobj);
     }
 
     /**
@@ -165,7 +129,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void removeTuioObject(TuioObject tobj) {
         logger.debug(MessageFormat.format("remove tuio object symbol id: {0}", tobj.getSymbolID()));
-        broadcast("remove", tobj);
+        broadcast(tobj);
     }
 
     /**
@@ -176,7 +140,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void refresh(TuioTime bundleTime) {
         logger.debug(MessageFormat.format("refresh frame id: {0}", bundleTime.getFrameID()));
-        broadcast("refresh", bundleTime);
+        broadcast(bundleTime);
     }
 
     /**
@@ -187,7 +151,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void addTuioCursor(TuioCursor tcur) {
         logger.trace(MessageFormat.format("add tuio cursor id: {0}", tcur.getCursorID()));
-        broadcast("add", tcur);
+        broadcast(tcur);
     }
 
     /**
@@ -198,7 +162,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void updateTuioCursor(TuioCursor tcur) {
         logger.trace(MessageFormat.format("update tuio cursor id: {0}", tcur.getCursorID()));
-        broadcast("update", tcur);
+        broadcast(tcur);
     }
 
     /**
@@ -209,7 +173,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void removeTuioCursor(TuioCursor tcur) {
         logger.trace(MessageFormat.format("remove tuio cursor id: {0}", tcur.getCursorID()));
-        broadcast("remove", tcur);
+        broadcast(tcur);
     }
 
     /**
@@ -220,7 +184,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void addTuioBlob(TuioBlob tblb) {
         logger.debug(MessageFormat.format("Added Blob: {0}", tblb.getBlobID()));
-        broadcast("add", tblb);
+        broadcast(tblb);
     }
 
     /**
@@ -231,7 +195,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void updateTuioBlob(TuioBlob tblb) {
         logger.debug(MessageFormat.format("Update Blob: {0}", tblb.getBlobID()));
-        broadcast("update", tblb);
+        broadcast(tblb);
     }
 
     /**
@@ -242,7 +206,7 @@ public class TuioSink implements TuioListener {
     @Override
     public void removeTuioBlob(TuioBlob tblb) {
         logger.debug(MessageFormat.format("Remove Blob: {0}", tblb.getBlobID()));
-        broadcast("remove", tblb);
+        broadcast(tblb);
     }
 
     public SerializeType getSerializationType() {

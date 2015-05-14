@@ -22,6 +22,7 @@ import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.zeromq.ZMQ;
 
 public class TuioPublish {
@@ -84,8 +85,9 @@ public class TuioPublish {
             //while not halted (infinite loop...)
             //read any available messages and publish
             while (!sink.mailbox.isHalted()) {
-                byte[] msg = sink.mailbox.getMessage();
-                publisher.send(msg, 0);
+                ImmutablePair<String, byte[]> msg = sink.mailbox.getMessage();
+                publisher.sendMore(msg.left + "." + serialize_method.toString());
+                publisher.send(msg.right, 0);
             }
 
             //cleanup
